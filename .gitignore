@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.local
+
+# The actual database — has real leads, phone numbers, and access codes in it.
+# NEVER commit this. On the server, it's created fresh on first run (db.js
+# seeds it) and should live on a persistent volume, not in the repo.
+data/db.json
+
+.DS_Store
+*.log
