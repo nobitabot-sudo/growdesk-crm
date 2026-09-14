@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GrowDesk CRM</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#12162A">
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div id="loginView" class="login-wrap">
+  <div class="login-card">
+    <div class="wordmark">Grow<span>Desk</span></div>
+    <div class="sub">Leads CRM</div>
+    <div class="field">
+      <label>Naam</label>
+      <input id="loginName" type="text" autocomplete="off" placeholder="Apna naam">
+    </div>
+    <div class="field">
+      <label>Access Code</label>
+      <input id="loginCode" type="text" autocomplete="off" placeholder="Admin ne diya hua code">
+    </div>
+    <button class="btn-primary" id="loginBtn">Login</button>
+    <div class="err-msg hidden" id="loginErr"></div>
+  </div>
+</div>
+
+<div id="appView" class="hidden">
+  <header class="app-top">
+    <div>
+      <div class="wordmark">Grow<span>Desk</span></div>
+      <div class="who" id="whoAmI"></div>
+    </div>
+    <button id="logoutBtn">Logout</button>
+  </header>
+  <main>
+    <nav class="tabs" id="tabBar"></nav>
+    <div id="screen"></div>
+  </main>
+</div>
+
+<script src="/scriptData.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
