@@ -7,13 +7,18 @@ whichever active caller currently has the fewest leads (round robin).
 ## What's inside
 
 - `server.js` — the API (Express). Also serves the frontend.
-- `db.js` — data layer. `data/db.json` is the database (plain JSON file — no separate
-  database server to install). Two things live here that matter most:
+- `db.js` — data layer. Uses Supabase/Postgres if `DATABASE_URL` is set, else
+  falls back to a local `data/db.json` file — both store the exact same JSON
+  shape, so nothing else in the app needs to know or care which one is active.
+  A few things live here that matter most:
   - `normalizePhone()` — strips everything to the last 10 digits so `+91 98765-43210`,
     `09876543210`, and `9876543210` are recognized as the same number.
   - `ingestLeads()` — the single door every lead walks through, whether it came from
-    a live scrape or a CSV import. It checks the phone against every existing lead
-    before inserting, then hands the new lead to `pickNextCaller()` for round robin.
+    a live scrape, a CSV import, or the manual add-lead form. It checks the phone
+    against every existing lead before inserting; new leads land unassigned in
+    the shared pool (see "the pool model" below).
+  - `topUpCaller()` — pulls a caller up to her active-lead cap from that pool,
+    oldest lead first, whenever she has room.
 - `scrapers/googlePlaces.js` — the one live "scrape" source, using the official
   Google Places API. See the note at the top of that file on why JustDial and
   Instagram are import-only rather than scraped directly. Also has
@@ -23,11 +28,41 @@ whichever active caller currently has the fewest leads (round robin).
   you give it. The Scrape tab's "Budget Scrape" section is the UI for this.
 - `public/` — the installable PWA (login, caller dashboard, admin panels).
 
+## Database setup (Supabase)
+
+Without `DATABASE_URL` set, the app stores everything in a local
+`data/db.json` file — that's fine on your own laptop, but most free hosts
+wipe their disk on restart, so leads/callers/logins would vanish. Supabase's
+free Postgres (500 MB, never expires, no card) fixes that. Setup:
+
+1. Go to **supabase.com** → sign up (GitHub login is fine) → **New project**.
+   Pick any name/region, set a database password (save it — you'll need it
+   in step 3), and wait ~2 minutes for it to provision.
+2. Once it's ready: left sidebar → **Project Settings** (gear icon) →
+   **Database**.
+3. Under **Connection string**, pick the **URI** tab, and copy it — it looks
+   like `postgresql://postgres.xxxxx:[YOUR-PASSWORD]@aws-...pooler.supabase.com:6543/postgres`.
+   Replace `[YOUR-PASSWORD]` with the password from step 1.
+   Use the **Transaction pooler** connection string (the default one shown)
+   rather than the direct connection — it works better with how hosts like
+   Render manage connections.
+4. That whole string is your `DATABASE_URL`. Set it as an environment
+   variable wherever the app runs (locally in `.env`, or in Render's
+   Environment tab when deployed — see below).
+5. That's it — no manual table creation needed. The app creates its own
+   table (`app_state`) automatically the first time it connects.
+
+You can open Supabase's **Table Editor** any time to look at the raw data
+(it's stored as one JSON blob per app in a table called `app_state` — this
+app doesn't use a traditional table-per-entity schema, see the note in
+"Known limits" below for why and when that would matter enough to change).
+
 ## First-time setup
 
 ```bash
 npm install
-GOOGLE_PLACES_API_KEY=your_key_here PORT=3000 node server.js
+cp .env.example .env    # then fill in DATABASE_URL, GOOGLE_PLACES_API_KEY, GROQ_API_KEY
+node server.js
 ```
 
 Open `http://localhost:3000`. Log in as:
@@ -35,20 +70,25 @@ Open `http://localhost:3000`. Log in as:
 - **Access Code:** `ADMIN01`
 
 Change that access code immediately — right now anyone who reads this file knows it.
-The quickest way: open `data/db.json`, edit the admin user's `accessCode` field, restart.
+The quickest way: open Supabase's Table Editor (or `data/db.json` if running without
+a database), find the admin user's `accessCode` field inside the JSON, edit it, save.
 (A proper "change my own code" screen is a good next addition once you're past the demo stage.)
 
-Google Places API key: console.cloud.google.com → enable "Places API" → create an API
-key → attach billing (Google charges per request past a free tier). Without this key
-set, the Scrape tab will show an error but CSV Import still works fine.
+Google Places API key: console.cloud.google.com → enable "Places API (legacy)" →
+create an API key → attach billing (Google's own $200/month free credit covers
+small-scale use). Without this key set, the Scrape tab will show an error but
+CSV Import and manual add still work fine.
 
 ## Deploying so the callers can actually use it
 
 This is a normal Node app — any host that runs `node server.js` and gives you a public
-URL works: Render, Railway, a small VPS, etc. Two things to set on whichever you pick:
-1. Environment variable `GOOGLE_PLACES_API_KEY` (and `GROQ_API_KEY` if you want the Bot tab working)
-2. Persistent disk/volume mounted at the app's `data/` folder — otherwise `db.json`
-   resets every time the host restarts your app and you lose all leads.
+URL works: Render, Railway, a small VPS, etc. On whichever you pick, set these
+as environment variables (in that platform's dashboard, not in the repo):
+1. `DATABASE_URL` (from the Supabase setup above) — with this set, no persistent
+   disk on the app host is needed, since all the actual data lives in Supabase,
+   not on the app server's own disk. This is what makes Render's free tier
+   (which has no persistent disk) safe to use.
+2. `GOOGLE_PLACES_API_KEY` (and `GROQ_API_KEY` if you want the Bot tab working)
 
 Once it's live at a URL (e.g. `https://growdesk-crm.onrender.com`), each caller opens
 it on her phone and taps "Add to Home Screen" — it installs like an app (that's the PWA
@@ -180,7 +220,13 @@ bot is instructed to answer from.
 
 - One admin access code, no "forgot code" flow — for a 2–10 person team this is fine;
   worth hardening before it's a bigger operation.
-- `db.json` is a flat file, not a real database — totally fine at hundreds—low
-  thousands of leads, but if this grows large, move to SQLite/Postgres later
-  (the `db.js` interface is small enough to swap out without touching `server.js` much).
+- Storage is one JSON blob per row (in Supabase or the local file), not a
+  proper table-per-entity SQL schema — every request loads the whole thing,
+  mutates it in memory, and writes it back whole. Totally fine at the scale
+  this is built for (small team, thousands of leads) and much less code to
+  maintain, but it's not built for many people hitting the API at the exact
+  same instant (a rare edge case for a handful of callers) or for very large
+  data volumes. If this ever needs to scale well past that, moving to a real
+  users/leads/sessions table schema is the next step — `db.js` is the only
+  file that would need rewriting; `server.js` and the frontend wouldn't change.
 - No automatic re-scrape scheduling — Scrape tab is triggered manually for now.
