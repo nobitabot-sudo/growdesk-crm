@@ -341,16 +341,56 @@ function renderScrape() {
 /* ---------------- ADMIN: IMPORT ---------------- */
 function renderImport() {
   const screen = document.getElementById('screen');
+  const catOptions = Object.keys(CATEGORY_LABELS);
   screen.innerHTML = `
     <div class="panel-box">
-      <h3>CSV Import</h3>
+      <h3>Ek Lead Manually Add Karo</h3>
+      <div class="summary-box">CSV banane ka jhanjhat nahi — bas ek lead ka detail bhar do, yeh bhi pool mein jaake wahi dedup + auto-distribute follow karega.</div>
+      <div class="field" style="margin-top:10px;"><label>Business Name</label><input id="manBiz" placeholder="e.g. Sunrise Cafe"></div>
+      <div class="field"><label>Phone</label><input id="manPhone" placeholder="e.g. 9876543210"></div>
+      <div class="field">
+        <label>Category</label>
+        <select id="manCategory">${catOptions.map(k => `<option value="${k}">${escapeHtml(CATEGORY_LABELS[k])}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>City</label><input id="manCity" placeholder="e.g. Bengaluru"></div>
+      <div class="field"><label>Address (optional)</label><input id="manAddress" placeholder="e.g. MG Road"></div>
+      <button class="btn-gold" id="manAddBtn">Add Karo</button>
+      <div class="summary-box" id="manSummary"></div>
+    </div>
+
+    <div class="panel-box">
+      <h3>CSV Import (bulk)</h3>
       <div class="summary-box">Headers yeh hone chahiye: <b>businessName, phone, category, city, address</b>. JustDial/Instagram se manually collect kiya hua data isi format mein daal do.</div>
       <div class="field" style="margin-top:10px;"><label>Source ka naam</label><input id="importSource" placeholder="e.g. justdial-manual"></div>
       <div class="field"><label>CSV file</label><input id="importFile" type="file" accept=".csv"></div>
-      <button class="btn-gold" id="importBtn">Import Karo</button>
+      <button class="btn-ghost" id="importBtn">Import Karo</button>
       <div class="summary-box" id="importSummary"></div>
     </div>
   `;
+
+  document.getElementById('manAddBtn').onclick = async () => {
+    const businessName = document.getElementById('manBiz').value.trim();
+    const phone = document.getElementById('manPhone').value.trim();
+    const category = document.getElementById('manCategory').value;
+    const city = document.getElementById('manCity').value.trim();
+    const address = document.getElementById('manAddress').value.trim();
+    const summaryEl = document.getElementById('manSummary');
+    if (!businessName || !phone) { summaryEl.textContent = 'Business name aur phone dono bharo'; return; }
+    try {
+      const s = await api('/admin/leads/manual', { method: 'POST', body: JSON.stringify({ businessName, phone, category, city, address }) });
+      if (s.added) {
+        summaryEl.textContent = `${businessName} pool mein add ho gaya.`;
+        ['manBiz', 'manPhone', 'manCity', 'manAddress'].forEach(id => document.getElementById(id).value = '');
+      } else if (s.skippedDuplicate) {
+        summaryEl.textContent = 'Yeh number already system mein hai — duplicate skip ho gaya.';
+      } else {
+        summaryEl.textContent = 'Add nahi hua, phone number check karo.';
+      }
+    } catch (e) {
+      summaryEl.textContent = e.message;
+    }
+  };
+
   document.getElementById('importBtn').onclick = async () => {
     const fileEl = document.getElementById('importFile');
     const summaryEl = document.getElementById('importSummary');
