@@ -5,29 +5,77 @@ const { inferCategory } = require('./categoryMap');
 
 const DB_FILE = path.join(__dirname, 'data', 'db.json');
 
-function loadRaw() {
-  if (!fs.existsSync(DB_FILE)) {
-    const seed = {
-      users: [
-        // First admin account — change the access code after first login.
-        { id: crypto.randomUUID(), name: 'Admin', accessCode: 'ADMIN01', role: 'admin', active: true, createdAt: new Date().toISOString() }
-      ],
-      leads: [],
-      sessions: {}, // token -> { userId, createdAt } — persisted so logins survive a server restart
-      settings: { activeCapPerCaller: 5 }
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(seed, null, 2));
-  }
-  const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-  // Migration for db.json files created before sessions/settings existed.
+function seedData() {
+  return {
+    users: [
+      // First admin account — change the access code after first login.
+      { id: crypto.randomUUID(), name: 'Admin', accessCode: 'ADMIN01', role: 'admin', active: true, createdAt: new Date().toISOString() }
+    ],
+    leads: [],
+    sessions: {}, // token -> { userId, createdAt } — persisted so logins survive a server restart
+    settings: { activeCapPerCaller: 5 }
+  };
+}
+
+// Adds fields that didn't exist in older saves, whether that save is a
+// db.json file from before this feature or an old row in Postgres.
+function migrate(data) {
   let dirty = false;
   if (!data.sessions) { data.sessions = {}; dirty = true; }
   if (!data.settings) { data.settings = { activeCapPerCaller: 5 }; dirty = true; }
-  if (dirty) save(data);
+  return { data, dirty };
+}
+
+// ---- storage backend: Postgres (via DATABASE_URL) if set, else a local
+// JSON file. Both sides of this hold the exact same shape — one big object
+// with users/leads/sessions/settings — so every function below this point
+// (ingestLeads, topUpCaller, computeStats, etc.) works identically either
+// way and never needs to know which backend is active. ----
+let pgPool = null;
+if (process.env.DATABASE_URL) {
+  const { Pool } = require('pg');
+  pgPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false } // Supabase (and most hosted Postgres) requires this
+  });
+}
+
+async function ensureTable() {
+  await pgPool.query(`CREATE TABLE IF NOT EXISTS app_state (id INT PRIMARY KEY, data JSONB NOT NULL)`);
+}
+
+async function loadRaw() {
+  if (pgPool) {
+    await ensureTable();
+    const res = await pgPool.query('SELECT data FROM app_state WHERE id = 1');
+    if (res.rows.length === 0) {
+      const seed = seedData();
+      await pgPool.query('INSERT INTO app_state (id, data) VALUES (1, $1)', [JSON.stringify(seed)]);
+      return seed;
+    }
+    const { data, dirty } = migrate(res.rows[0].data);
+    if (dirty) await save(data);
+    return data;
+  }
+
+  // File fallback — same as before, for local runs with no DATABASE_URL set.
+  if (!fs.existsSync(DB_FILE)) {
+    fs.writeFileSync(DB_FILE, JSON.stringify(seedData(), null, 2));
+  }
+  const { data, dirty } = migrate(JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
+  if (dirty) await save(data);
   return data;
 }
 
-function save(data) {
+async function save(data) {
+  if (pgPool) {
+    await ensureTable();
+    await pgPool.query(
+      'INSERT INTO app_state (id, data) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET data = $1',
+      [JSON.stringify(data)]
+    );
+    return;
+  }
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
