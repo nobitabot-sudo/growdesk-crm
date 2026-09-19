@@ -15,59 +15,67 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---- sessions, persisted in db.json (data.sessions: token -> {userId, createdAt}) ----
-// No expiry by design — callers stay logged in until the admin deactivates
-// them or someone explicitly logs out. Fine for a small internal team tool;
-// if this ever needs per-device revoke or expiry, that's the place to add it.
+// ---- sessions, persisted alongside everything else in db.js (Postgres if
+// DATABASE_URL is set, else the local JSON file) — data.sessions:
+// token -> {userId, createdAt}. No expiry by design — callers stay logged in
+// until the admin deactivates them or someone explicitly logs out. ----
 function auth(requiredRole) {
-  return (req, res, next) => {
-    const token = (req.headers.authorization || '').replace('Bearer ', '');
-    const data = db.loadRaw();
-    const session = data.sessions[token];
-    if (!session) return res.status(401).json({ error: 'Not logged in' });
-    const user = data.users.find(u => u.id === session.userId && u.active);
-    if (!user) return res.status(401).json({ error: 'Session invalid' });
-    if (requiredRole && user.role !== requiredRole) return res.status(403).json({ error: 'Not allowed' });
-    req.user = user;
-    req.data = data;
-    req.token = token;
-    next();
+  return async (req, res, next) => {
+    try {
+      const token = (req.headers.authorization || '').replace('Bearer ', '');
+      const data = await db.loadRaw();
+      const session = data.sessions[token];
+      if (!session) return res.status(401).json({ error: 'Not logged in' });
+      const user = data.users.find(u => u.id === session.userId && u.active);
+      if (!user) return res.status(401).json({ error: 'Session invalid' });
+      if (requiredRole && user.role !== requiredRole) return res.status(403).json({ error: 'Not allowed' });
+      req.user = user;
+      req.data = data;
+      req.token = token;
+      next();
+    } catch (err) {
+      res.status(500).json({ error: 'Database error: ' + err.message });
+    }
   };
 }
 
 // ================= AUTH =================
-app.post('/api/auth/login', (req, res) => {
-  const { name, accessCode } = req.body;
-  const data = db.loadRaw();
-  const user = data.users.find(
-    u => u.active && u.accessCode === String(accessCode || '').toUpperCase().trim()
-      && u.name.toLowerCase() === String(name || '').toLowerCase().trim()
-  );
-  if (!user) return res.status(401).json({ error: 'Naam ya access code galat hai' });
-  const token = crypto.randomBytes(24).toString('hex');
-  data.sessions[token] = { userId: user.id, createdAt: new Date().toISOString() };
-  db.save(data);
-  res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { name, accessCode } = req.body;
+    const data = await db.loadRaw();
+    const user = data.users.find(
+      u => u.active && u.accessCode === String(accessCode || '').toUpperCase().trim()
+        && u.name.toLowerCase() === String(name || '').toLowerCase().trim()
+    );
+    if (!user) return res.status(401).json({ error: 'Naam ya access code galat hai' });
+    const token = crypto.randomBytes(24).toString('hex');
+    data.sessions[token] = { userId: user.id, createdAt: new Date().toISOString() };
+    await db.save(data);
+    res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error: ' + err.message });
+  }
 });
 
-app.post('/api/auth/logout', auth(), (req, res) => {
+app.post('/api/auth/logout', auth(), async (req, res) => {
   delete req.data.sessions[req.token];
-  db.save(req.data);
+  await db.save(req.data);
   res.json({ ok: true });
 });
 
 // ================= CALLER =================
-app.get('/api/leads/mine', auth(), (req, res) => {
+app.get('/api/leads/mine', auth(), async (req, res) => {
   const data = req.data;
   db.topUpCaller(data, req.user.id);
-  db.save(data);
+  await db.save(data);
   const mine = data.leads
     .filter(l => l.assignedTo === req.user.id)
     .sort((a, b) => (a.assignedAt < b.assignedAt ? 1 : -1));
   res.json(mine);
 });
 
-app.post('/api/leads/:id/status', auth(), (req, res) => {
+app.post('/api/leads/:id/status', auth(), async (req, res) => {
   const { status, notes } = req.body;
   const data = req.data;
   const lead = data.leads.find(l => l.id === req.params.id);
@@ -80,7 +88,7 @@ app.post('/api/leads/:id/status', auth(), (req, res) => {
   if (status === 'closed' || status === 'rejected') {
     db.topUpCaller(data, lead.assignedTo);
   }
-  db.save(data);
+  await db.save(data);
   res.json(lead);
 });
 
@@ -94,7 +102,7 @@ app.get('/api/admin/callers', auth('admin'), (req, res) => {
   res.json(callers);
 });
 
-app.post('/api/admin/callers', auth('admin'), (req, res) => {
+app.post('/api/admin/callers', auth('admin'), async (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name chahiye' });
   const data = req.data;
@@ -104,16 +112,16 @@ app.post('/api/admin/callers', auth('admin'), (req, res) => {
     active: true, createdAt: new Date().toISOString()
   };
   data.users.push(user);
-  db.save(data);
+  await db.save(data);
   res.json(user); // access code is only ever shown here — copy it to the caller now
 });
 
-app.post('/api/admin/callers/:id/toggle', auth('admin'), (req, res) => {
+app.post('/api/admin/callers/:id/toggle', auth('admin'), async (req, res) => {
   const data = req.data;
   const user = data.users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'Not found' });
   user.active = !user.active;
-  db.save(data);
+  await db.save(data);
   res.json(user);
 });
 
@@ -125,12 +133,12 @@ app.get('/api/admin/settings', auth('admin'), (req, res) => {
   res.json(db.getSettings(req.data));
 });
 
-app.post('/api/admin/settings', auth('admin'), (req, res) => {
+app.post('/api/admin/settings', auth('admin'), async (req, res) => {
   const cap = Number(req.body.activeCapPerCaller);
   if (!cap || cap < 1) return res.status(400).json({ error: 'Valid cap (1+) chahiye' });
   const data = req.data;
   const settings = db.updateSettings(data, { activeCapPerCaller: cap });
-  db.save(data);
+  await db.save(data);
   res.json(settings);
 });
 
@@ -159,6 +167,17 @@ app.get('/api/admin/leads/export', auth('admin'), (req, res) => {
   res.send(csv);
 });
 
+// Manually add one lead from the admin panel — same dedup + pool logic as
+// scrape/import, just for the "I have one lead, typing CSVs is overkill" case.
+app.post('/api/admin/leads/manual', auth('admin'), async (req, res) => {
+  const { businessName, phone, category, city, address } = req.body;
+  if (!businessName || !phone) return res.status(400).json({ error: 'Business name aur phone dono chahiye' });
+  const data = req.data;
+  const summary = db.ingestLeads(data, [{ businessName, phone, category, city, address }], 'manual-admin');
+  await db.save(data);
+  res.json(summary);
+});
+
 // Live scrape via Google Places — the one ToS-safe automated source.
 app.post('/api/admin/scrape', auth('admin'), async (req, res) => {
   const { query, city, category } = req.body;
@@ -167,7 +186,7 @@ app.post('/api/admin/scrape', auth('admin'), async (req, res) => {
     const { leads: rawLeads, skippedFamous } = await scrapeGooglePlaces(query, city, category);
     const data = req.data;
     const summary = db.ingestLeads(data, rawLeads, `google:${query}`);
-    db.save(data);
+    await db.save(data);
     res.json({ ...summary, skippedFamous });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -188,7 +207,7 @@ app.post('/api/admin/scrape-budget', auth('admin'), async (req, res) => {
     const result = await scrapeCategoriesWithBudget(categories, city, budget);
     const data = req.data;
     const summary = db.ingestLeads(data, result.leads, `google:budget:${city}`);
-    db.save(data);
+    await db.save(data);
     res.json({ ...summary, costEstimate: result.costEstimate, byCategory: result.byCategory, skippedFamous: result.skippedFamous, stoppedReason: result.stoppedReason });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -197,14 +216,14 @@ app.post('/api/admin/scrape-budget', auth('admin'), async (req, res) => {
 
 // CSV import — the intended route for JustDial/Instagram/manually-collected leads.
 // Expected headers: businessName,phone,category,city,address
-app.post('/api/admin/import', auth('admin'), upload.single('file'), (req, res) => {
+app.post('/api/admin/import', auth('admin'), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'CSV file chahiye' });
   const source = req.body.source || 'manual-import';
   try {
     const records = parse(req.file.buffer.toString('utf8'), { columns: true, skip_empty_lines: true, trim: true });
     const data = req.data;
     const summary = db.ingestLeads(data, records, source);
-    db.save(data);
+    await db.save(data);
     res.json(summary);
   } catch (err) {
     res.status(400).json({ error: 'CSV parse nahi hua: ' + err.message });
@@ -259,6 +278,7 @@ app.post('/api/bot/ask', auth(), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.use((req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 const PORT = process.env.PORT || 3000;
