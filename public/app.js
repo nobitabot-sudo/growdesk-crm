@@ -401,7 +401,7 @@ function renderImport() {
     summaryEl.textContent = 'Importing…';
     try {
       const s = await api('/admin/import', { method: 'POST', body: fd });
-      summaryEl.innerHTML = `<b>${s.added}</b> naye leads pool mein add hue. ${s.skippedDuplicate} duplicate skip hue, ${s.skippedNoPhone} bina phone ke skip hue. Callers ko khud-ba-khud milengi.`;
+      summaryEl.innerHTML = `<b>${s.added}</b> naye leads pool mein add hue. ${s.skippedDuplicate} duplicate skip hue, ${s.skippedNoPhone} bina phone ke skip hue, ${s.skippedFamous || 0} "famous/already-set" business skip hue. Callers ko khud-ba-khud milengi.`;
     } catch (e) {
       summaryEl.textContent = e.message;
     }
