@@ -102,12 +102,18 @@ const ACTIVE_STATUSES = ['assigned', 'contacted', 'interested', 'follow-up'];
 // actually reach a caller.
 function ingestLeads(data, rawLeads, source) {
   const existingPhones = new Set(data.leads.map(l => l.phoneNormalized).filter(Boolean));
-  let added = 0, skippedDuplicate = 0, skippedNoPhone = 0;
+  let added = 0, skippedDuplicate = 0, skippedNoPhone = 0, skippedFamous = 0;
 
   for (const raw of rawLeads) {
     const phoneNormalized = normalizePhone(raw.phone);
     if (!phoneNormalized) { skippedNoPhone++; continue; }
     if (existingPhones.has(phoneNormalized)) { skippedDuplicate++; continue; }
+
+    // Same "already-famous, skip it" rule as the live Google Places scraper —
+    // applied here too so CSV imports (e.g. from Apify) get it for free.
+    const hasWebsite = !!(raw.website && String(raw.website).trim());
+    const ratingCount = Number(raw.ratingCount || 0);
+    if (hasWebsite || ratingCount > 300) { skippedFamous++; continue; }
 
     const category = raw.category || inferCategory({ types: raw.types || [], text: `${raw.businessName || ''} ${source}` });
 
@@ -138,7 +144,7 @@ function ingestLeads(data, rawLeads, source) {
     added++;
   }
 
-  return { added, skippedDuplicate, skippedNoPhone };
+  return { added, skippedDuplicate, skippedNoPhone, skippedFamous };
 }
 
 // Pulls a caller up to her active-lead cap from the shared pool — oldest
