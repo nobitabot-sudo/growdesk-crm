@@ -215,14 +215,32 @@ app.post('/api/admin/scrape-budget', auth('admin'), async (req, res) => {
 });
 
 // CSV import — the intended route for JustDial/Instagram/manually-collected leads.
-// Expected headers: businessName,phone,category,city,address
+// Ideal headers: businessName,phone,category,city,address — but normalizeImportRow
+// below also recognizes Apify's Google Maps Scraper column names directly
+// (title, phoneUnformatted, categoryName, reviewsCount, url), so that export
+// can be uploaded as-is with no renaming in Excel first.
+function normalizeImportRow(raw) {
+  return {
+    businessName: raw.businessName || raw.title || raw.name || '',
+    phone: raw.phone || raw.phoneUnformatted || '',
+    category: raw.category || raw.categoryName || '',
+    city: raw.city || '',
+    address: raw.address || '',
+    website: raw.website || '',
+    ratingCount: raw.ratingCount || raw.reviewsCount || raw.user_ratings_total || '',
+    rating: raw.rating || raw.totalScore || '',
+    mapsUrl: raw.mapsUrl || raw.url || ''
+  };
+}
+
 app.post('/api/admin/import', auth('admin'), upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'CSV file chahiye' });
   const source = req.body.source || 'manual-import';
   try {
     const records = parse(req.file.buffer.toString('utf8'), { columns: true, skip_empty_lines: true, trim: true });
+    const normalized = records.map(normalizeImportRow);
     const data = req.data;
-    const summary = db.ingestLeads(data, records, source);
+    const summary = db.ingestLeads(data, normalized, source);
     await db.save(data);
     res.json(summary);
   } catch (err) {
