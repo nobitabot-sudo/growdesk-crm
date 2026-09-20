@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { inferCategory } = require('./categoryMap');
+const { inferCategory, CATEGORIES } = require('./categoryMap');
 
 const DB_FILE = path.join(__dirname, 'data', 'db.json');
 
@@ -115,7 +115,14 @@ function ingestLeads(data, rawLeads, source) {
     const ratingCount = Number(raw.ratingCount || 0);
     if (hasWebsite || ratingCount > 300) { skippedFamous++; continue; }
 
-    const category = raw.category || inferCategory({ types: raw.types || [], text: `${raw.businessName || ''} ${source}` });
+    // raw.category is only trusted as-is when it's already one of our own
+    // canonical keys (cafe, gym, salon, ...). A source like Apify hands us
+    // free-text Google category names ("Biryani restaurant", "Andhra
+    // restaurant") — those go into the keyword matcher instead of being
+    // stored verbatim, so the lead still ends up correctly bucketed.
+    const category = CATEGORIES.includes(raw.category)
+      ? raw.category
+      : inferCategory({ types: raw.types || [], text: `${raw.businessName || ''} ${raw.category || ''} ${source}` });
 
     data.leads.push({
       id: crypto.randomUUID(),
